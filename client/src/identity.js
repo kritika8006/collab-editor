@@ -1,6 +1,5 @@
-// Each browser TAB gets its own identity (name + cursor colour), kept in
-// sessionStorage. Two tabs therefore look like two different people, which
-// makes testing easy. Different browsers/devices are separate anyway.
+// Each browser TAB gets its own cursor colour, kept in sessionStorage, so two
+// tabs signed in as different people look different on screen.
 export const PALETTE = [
   '#e06c75', '#61afef', '#98c379', '#e5c07b', '#c678dd',
   '#56b6c2', '#d19a66', '#ff79c6', '#8be9fd', '#f1fa8c'
@@ -21,14 +20,9 @@ function write(key, value) {
   }
 }
 
-export function loadIdentity() {
-  const name = read('collab:name') || `Guest-${Math.floor(1000 + Math.random() * 9000)}`
+/** This tab's cursor colour (the NAME now comes from your account). */
+export function loadColor() {
   const color = read('collab:color') || PALETTE[Math.floor(Math.random() * PALETTE.length)]
-  write('collab:name', name)
   write('collab:color', color)
-  return { name, color }
-}
-
-export function saveName(name) {
-  write('collab:name', name)
+  return color
 }

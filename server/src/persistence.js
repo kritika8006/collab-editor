@@ -3,7 +3,7 @@
 // Two layers:
 //   1. createPersistence(backend): debounced, serialised, retried saving.
 //      It does not care WHERE the bytes go.
-//   2. a backend: { read(room) -> Uint8Array|null, write(room, Uint8Array), close() }
+//   2. a backend: { read(room) -> Uint8Array|null, write(room, Uint8Array), remove(room), close() }
 //      - fileBackend(dir)         one <room>.bin file per room (default, no setup)
 //      - mongoBackend({ uri })    one MongoDB document per room (set MONGODB_URI)
 import fs from 'node:fs'
@@ -54,7 +54,15 @@ export function createPersistence(
     timers.set(room, timer)
   }
 
-  return { load, save, scheduleSave, close: () => backend.close?.() }
+  /** Forget a room for good: cancel pending saves, then delete its stored data. */
+  async function remove(room) {
+    clearTimeout(timers.get(room))
+    timers.delete(room)
+    await (inFlight.get(room) ?? Promise.resolve()).catch(() => {})
+    await backend.remove?.(room)
+  }
+
+  return { load, save, scheduleSave, remove, close: () => backend.close?.() }
 }
 
 // ---------------------------------------------------------------- file backend
@@ -78,6 +86,9 @@ export function fileBackend(dataDir) {
       const tmp = `${target}.tmp`
       await fs.promises.writeFile(tmp, update)
       await fs.promises.rename(tmp, target)
+    },
+    async remove(room) {
+      await fs.promises.rm(fileFor(room), { force: true })
     },
     async close() {}
   }
@@ -111,6 +122,9 @@ export function mongoBackendFromCollection(collection, { onClose } = {}) {
         { $set: { data: Buffer.from(update), updatedAt: new Date() } },
         { upsert: true }
       )
+    },
+    async remove(room) {
+      await collection.deleteOne({ _id: room })
     },
     async close() {
       await onClose?.()

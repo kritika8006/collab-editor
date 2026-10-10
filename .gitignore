@@ -1,4 +1,7 @@
-node_modules
-dist
-data
+node_modules/
 .env
+.env.*
+!.env.example
+server/data/
+server/loadtest/results.json
+dist/

@@ -5,6 +5,7 @@ import * as Y from 'yjs'
 import { BSON } from 'mongodb'
 import { WebsocketProvider } from 'y-websocket'
 import { createApp } from '../src/app.js'
+const allowAll = async () => ({ userId: 'test-user', role: 'editor' })
 import { createPersistence, mongoBackend, mongoBackendFromCollection } from '../src/persistence.js'
 
 // ---------------------------------------------------------------- helpers
@@ -25,7 +26,7 @@ function waitFor(predicate, ms = 4000) {
 // `t` is the test context: anything registered with t.after() is cleaned up
 // even when an assertion fails, so a failing test never hangs `npm test`.
 async function startServer(t, persistence) {
-  const app = createApp({ persistence })
+  const app = createApp({ persistence, authorize: allowAll })
   await new Promise((resolve) => app.server.listen(0, resolve))
   t.after(() => app.close())
   return { ...app, url: `ws://localhost:${app.server.address().port}` }

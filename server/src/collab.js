@@ -10,6 +10,7 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
+import { can } from './permissions.js'
 
 const MSG_SYNC = 0
 const MSG_AWARENESS = 1
@@ -17,7 +18,12 @@ const WS_OPEN = 1
 const HEARTBEAT_MS = 30_000
 const IDLE_ROOM_MS = 30_000 // keep an empty room in memory briefly, then free it
 
-export function createCollab(persistence) {
+/**
+ * `seed`: text a brand-new (never saved) room starts with.
+ * Each connection carries conn.auth = { userId, role }; the role decides
+ * whether its document changes are accepted (see onMessage).
+ */
+export function createCollab(persistence, { seed = '' } = {}) {
   const rooms = new Map() // name -> ready room
   const loading = new Map() // name -> Promise<room> while it loads from storage
   let closing = false
@@ -33,6 +39,7 @@ export function createCollab(persistence) {
     const doc = new Y.Doc()
     const saved = await persistence.load(name)
     if (saved) Y.applyUpdate(doc, saved)
+    else if (seed) doc.getText('code').insert(0, seed)
 
     const awareness = new awarenessProtocol.Awareness(doc)
     awareness.setLocalState(null) // the server itself has no cursor
@@ -103,6 +110,11 @@ export function createCollab(persistence) {
       const decoder = decoding.createDecoder(new Uint8Array(data))
       const type = decoding.readVarUint(decoder)
       if (type === MSG_SYNC) {
+        // Enforced HERE, not in the browser: a viewer may only ask for the
+        // document (sync step 1). Anything that carries changes is dropped.
+        if (!can(conn.auth.role, 'write')) {
+          if (decoding.peekVarUint(decoder) !== syncProtocol.messageYjsSyncStep1) return
+        }
         const encoder = encoding.createEncoder()
         encoding.writeVarUint(encoder, MSG_SYNC)
         syncProtocol.readSyncMessage(decoder, encoder, room.doc, conn)
@@ -134,8 +146,9 @@ export function createCollab(persistence) {
   }
 
   /** Attach a freshly upgraded WebSocket to a room. */
-  function handleConnection(conn, roomName) {
+  function handleConnection(conn, roomName, auth = { userId: null, role: 'viewer' }) {
     conn.binaryType = 'arraybuffer'
+    conn.auth = { ...auth }
     let room = null // set once the room has finished loading
     let closed = false
     const pending = [] // messages that arrive while the room is loading
@@ -209,6 +222,40 @@ export function createCollab(persistence) {
       })
   }
 
+  /**
+   * Re-check everyone connected to a room after its sharing changed.
+   * `roleOf(userId)` returns the current role or null; null means disconnect.
+   */
+  async function applyPermissions(roomName, roleOf) {
+    const room = rooms.get(roomName)
+    if (!room) return
+    await Promise.all(
+      Array.from(room.conns.keys()).map(async (conn) => {
+        const role = await roleOf(conn.auth.userId)
+        if (!role) return conn.close(4403, 'access revoked')
+        if (role !== conn.auth.role) {
+          // Apply it now, and tell the browser to reconnect so it reloads the
+          // document and its editing mode from scratch (see RoomView.jsx).
+          conn.auth.role = role
+          conn.close(4001, 'role changed')
+        }
+      })
+    )
+  }
+
+  /** The room was deleted: disconnect everyone and free the in-memory copy. */
+  async function dropRoom(roomName) {
+    await loading.get(roomName)?.catch(() => {})
+    const room = rooms.get(roomName)
+    if (!room) return
+    clearTimeout(room.idleTimer)
+    const conns = Array.from(room.conns.keys())
+    room.conns.clear() // so closing them does not trigger a final save
+    rooms.delete(roomName)
+    conns.forEach((conn) => conn.close(4404, 'room deleted'))
+    room.doc.destroy()
+  }
+
   /** Save every room and free memory. Call on shutdown. */
   async function shutdown() {
     closing = true
@@ -226,5 +273,13 @@ export function createCollab(persistence) {
     rooms.clear()
   }
 
-  return { handleConnection, shutdown, stats: () => ({ rooms: rooms.size }) }
-}
+  return {
+    handleConnection,
+    applyPermissions,
+    dropRoom,
+    shutdown,
+    stats: () => ({
+      rooms: rooms.size,
+      conns: Array.from(rooms.values()).reduce((sum, r) => sum + r.conns.size, 0)
+    })
+  }}

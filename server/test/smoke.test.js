@@ -7,9 +7,12 @@ import WebSocket from 'ws'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { createApp } from '../src/app.js'
+// These tests are about syncing and storage, not login: let everyone in as an editor.
+  // These tests are about syncing and storage, not login: let everyone in as an editor.
+  const allowAll = async () => ({ userId: 'test-user', role: 'editor' })
 
 async function startServer(dataDir) {
-  const app = createApp({ dataDir })
+  const app = createApp({ dataDir, authorize: allowAll })
   await new Promise((resolve) => app.server.listen(0, resolve))
   return { ...app, url: `ws://localhost:${app.server.address().port}` }
 }

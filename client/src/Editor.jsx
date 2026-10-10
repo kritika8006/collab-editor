@@ -7,52 +7,39 @@ import { javascript } from '@codemirror/lang-javascript'
 import { yCollab } from 'y-codemirror.next'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { PALETTE } from './identity.js'
+import { WS_URL } from './api.js'
 
-const WS_URL = import.meta.env.VITE_WS_URL || `ws://${window.location.hostname}:1234`
-
-const STARTER = `// Welcome! Everyone in this room edits this file live.
-function greet(name) {
-  return "Hello, " + name + "!";
-}
-
-console.log(greet("world"));
-`
-
-export default function Editor({ room, identity, onStatus, onUsers }) {
+/**
+ * The shared code editor. The server decides whether you may type (this
+ * `readOnly` flag is only the matching UI: the server drops viewer edits anyway).
+ * The parent remounts this component (via `key`) when your role changes.
+ */
+export default function Editor({ room, token, identity, readOnly, onStatus, onUsers, onClose }) {
   const hostRef = useRef(null)
-  const providerRef = useRef(null)
-  const nameRef = useRef(identity.name)
   const colorRef = useRef(identity.color)
+    const nameRef = useRef(identity.name)
+  const publishRef = useRef(null)
+  const callbacks = useRef({})
+  callbacks.current = { onStatus, onUsers, onClose }
   const [ready, setReady] = useState(false)
 
-  // Tell everyone in the room who we are (name + cursor colour).
-  const publishUser = () => {
-    const provider = providerRef.current
-    if (!provider) return
-    const color = colorRef.current
-    provider.awareness.setLocalStateField('user', {
-      name: nameRef.current,
-      color,
-      colorLight: color + '33'
-    })
-  }
-
-  // Create the shared document, the connection and the editor.
   useEffect(() => {
     const doc = new Y.Doc()
-    const provider = new WebsocketProvider(WS_URL, room, doc)
-    providerRef.current = provider
+    const provider = new WebsocketProvider(WS_URL, room, doc, { params: { token } })
     const ytext = doc.getText('code')
     const awareness = provider.awareness
+
+    // Tell everyone in the room who we are (name + cursor colour).
+    const publishUser = () => {
+      const color = colorRef.current
+      awareness.setLocalStateField('user', { name:nameRef.current, color, colorLight: color + '33' })
+    }
+    publishRef.current = publishUser
     publishUser()
 
-    // Seed the starter text once, only if the room is truly empty after sync.
-    const onSync = (isSynced) => {
-      if (isSynced && ytext.length === 0) ytext.insert(0, STARTER)
-      if (isSynced) setReady(true)
-    }
-    provider.on('sync', onSync)
-    provider.on('status', ({ status }) => onStatus(status))
+    provider.on('sync', (isSynced) => isSynced && setReady(true))
+    provider.on('status', ({ status }) => callbacks.current.onStatus(status))
+    provider.on('connection-close', (event) => callbacks.current.onClose?.(event?.code ?? 0))
 
     const pushUsers = () => {
       // If someone who joined before us already uses our colour, pick a free one.
@@ -76,7 +63,7 @@ export default function Editor({ room, identity, onStatus, onUsers }) {
         if (state.user) users.push({ clientId, isMe: clientId === awareness.clientID, ...state.user })
       })
       users.sort((a, b) => Number(b.isMe) - Number(a.isMe) || a.clientId - b.clientId)
-      onUsers(users)
+      callbacks.current.onUsers(users)
     }
     awareness.on('change', pushUsers)
     pushUsers()
@@ -85,7 +72,13 @@ export default function Editor({ room, identity, onStatus, onUsers }) {
       parent: hostRef.current,
       state: EditorState.create({
         doc: ytext.toString(),
-        extensions: [basicSetup, oneDark, javascript(), yCollab(ytext, awareness)]
+        extensions: [
+          basicSetup,
+          oneDark,
+          javascript(),
+          yCollab(ytext, awareness),
+          ...(readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [])
+        ]
       })
     })
 
@@ -94,19 +87,15 @@ export default function Editor({ room, identity, onStatus, onUsers }) {
       view.destroy()
       provider.destroy()
       doc.destroy()
-      providerRef.current = null
     }
-    // room never changes during a session
+    // room, token and readOnly never change for a mounted editor (the parent remounts it)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room])
-
-  // Changing your display name updates your cursor label for everyone.
+  }, [room, token, readOnly])
+  // Renaming yourself updates your cursor label for everyone, without reconnecting.
   useEffect(() => {
     nameRef.current = identity.name
-    publishUser()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    publishRef.current?.()
   }, [identity.name])
-
   return (
     <div className="editor-wrap">
       {!ready && <div className="loading">Connecting to room…</div>}

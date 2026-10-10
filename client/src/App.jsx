@@ -1,86 +1,58 @@
-import { useMemo, useState } from 'react'
-import Editor from './Editor.jsx'
-import { loadIdentity, saveName } from './identity.js'
-import { getOrCreateRoom } from './room.js'
-
-const STATUS_LABEL = {
-  connecting: 'Connecting…',
-  connected: 'Connected',
-  disconnected: 'Disconnected — retrying'
-}
+import { useCallback, useEffect, useState } from 'react'
+import AuthPage from './AuthPage.jsx'
+import RoomsPage from './RoomsPage.jsx'
+import RoomView from './RoomView.jsx'
+import Topbar from './Topbar.jsx'
+import { api, getToken, setToken } from './api.js'
+import { useRoomRoute } from './room.js'
 
 export default function App() {
-  const room = useMemo(getOrCreateRoom, [])
-  const [identity, setIdentity] = useState(loadIdentity)
-  const [status, setStatus] = useState('connecting')
-  const [wasConnected, setWasConnected] = useState(false)
-  const [users, setUsers] = useState([])
-  const [copied, setCopied] = useState(false)
-  const me = users.find((u) => u.isMe)
-  // The connection library alternates 'disconnected' / 'connecting' on every
-  // retry, so "offline" means: we were connected before and are not right now.
-  const offline = wasConnected && status !== 'connected'
-  const handleStatus = (next) => {
-    setStatus(next)
-    if (next === 'connected') setWasConnected(true)
-  }
+  const [user, setUser] = useState(undefined) // undefined = checking, null = signed out
+  const [serverDown, setServerDown] = useState(false)
+  const [roomId, navigate] = useRoomRoute()
 
-  const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(window.location.href)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      window.prompt('Copy this link:', window.location.href)
-    }
-  }
+  const signOut = useCallback(() => {
+    setToken(null)
+    setUser(null)
+  }, [])
 
-  const rename = (e) => {
-    const name = e.target.value.slice(0, 24)
-    setIdentity((prev) => ({ ...prev, name }))
-    saveName(name)
-  }
+  useEffect(() => {
+    if (!getToken()) return setUser(null)
+    api
+      .me()
+      .then((res) => setUser(res.user))
+      .catch((err) => {
+        if (err.status === 0) setServerDown(true)
+        else signOut() // expired or invalid token
+      })
+  }, [signOut])
+
+  if (serverDown)
+    return (
+      <div className="page center">
+        <div className="card notice">
+          <h2>Cannot reach the server</h2>
+          <p className="muted">Start it with <code>npm run dev</code>, then reload this page.</p>
+        </div>
+      </div>
+    )
+  if (user === undefined) return <div className="page"><p className="muted">Loading…</p></div>
+  if (user === null) return <AuthPage onSignedIn={setUser} />
 
   return (
     <div className="app">
-      <header>
-        <div className="brand">
-          <strong>Collab Editor</strong>
-          <span className="room">room: {room}</span>
-        </div>
-        <div className="controls">
-          <span className={`status ${offline ? 'disconnected' : status}`}>
-            {offline ? 'Offline: retrying' : (STATUS_LABEL[status] ?? status)}
-          </span>
-          <input
-            className="name"
-            value={identity.name}
-            onChange={rename}
-            aria-label="Your display name"
-            title="Your display name (others see this on your cursor)"
-            style={{ borderColor: me?.color ?? identity.color }}
-          />
-          <button onClick={copyLink}>{copied ? 'Copied!' : 'Copy invite link'}</button>
-        </div>
-      </header>
-
-      {offline && (
-        <div className="offline-banner" role="status">
-          You are offline. Keep typing: your edits are kept and will sync automatically when the
-          connection is back.
-        </div>
+      <Topbar user={user} onUserChange={setUser} onSignOut={signOut} onHome={() => navigate(null)} />
+      {roomId ? (
+        <RoomView
+          key={roomId}
+          roomId={roomId}
+          user={user}
+          onBack={() => navigate(null)}
+          onSignedOut={signOut}
+        />
+      ) : (
+        <RoomsPage user={user} onOpen={navigate} />
       )}
-
-      <div className="users">
-        {users.map((u) => (
-          <span key={u.clientId} className="chip" style={{ background: u.color }}>
-            {u.name}
-            {u.isMe ? ' (you)' : ''}
-          </span>
-        ))}
-      </div>
-
-      <Editor room={room} identity={identity} onStatus={handleStatus} onUsers={setUsers} />
     </div>
   )
 }

@@ -7,11 +7,13 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "loadtest": "node loadtest/run.js"
   },
   "dependencies": {
     "dotenv": "16.6.1",
     "express": "4.22.3",
+    "jsonwebtoken": "9.0.2",
     "lib0": "0.2.119",
     "mongodb": "6.21.0",
     "ws": "8.22.0",
